@@ -3,3 +3,4 @@ __pycache__/
 demo_keys.json
 demo_carts.json
 VIDEO.md
+.env
