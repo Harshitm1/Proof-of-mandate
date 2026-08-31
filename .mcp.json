@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "proof-of-mandate": {
+      "command": "/Users/harshitmittal/Desktop/Razorpay/.venv/bin/python",
+      "args": ["/Users/harshitmittal/Desktop/Razorpay/mcp_server.py"]
+    }
+  }
+}
