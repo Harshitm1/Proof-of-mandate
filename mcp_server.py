@@ -228,5 +228,17 @@ def evidence(cart_id: str) -> str:
     return json.dumps(evidence_pack(gate, audit, cart_id), indent=2, default=str)
 
 
+@mcp.tool()
+def evidence_document(cart_id: str) -> str:
+    """Render the evidence pack as the document a merchant sends an acquirer.
+
+    Writes an HTML representment and returns its path.
+    """
+    import evidence_doc
+    pack = evidence_pack(gate, audit, cart_id)
+    path = evidence_doc.write(pack, str(HERE / f"evidence-{cart_id}.html"))
+    return json.dumps({"written": path, "verdict": pack.get("conclusion", "")[:80]})
+
+
 if __name__ == "__main__":
     mcp.run()
