@@ -309,8 +309,13 @@ class Gate:
                         f"{intent.budget_paise - st.spent_paise} remaining",
                         cart.total_paise, cart.cart_id, intent.mandate_id)
 
-    def settle(self, intent_env: Envelope, cart_env: Envelope):
-        """Record a completed charge. Call only after the rail confirms capture."""
+    def settle(self, intent_env: Envelope, cart_env: Envelope, rail_ref: str = ""):
+        """Record a completed charge. Call only after the rail confirms capture.
+
+        Separate from authorize() on purpose: if the rail fails, no budget is
+        consumed and the cart stays replayable, so a payment-provider outage
+        cannot silently burn the user's authority.
+        """
         intent = IntentMandate(**intent_env.body())
         cart = Cart(**cart_env.body())
         st = self.state.setdefault(intent.mandate_id, MandateState())
@@ -322,6 +327,13 @@ class Gate:
             "mandate_id": intent.mandate_id,
             "amount_paise": cart.total_paise,
             "spent_paise": st.spent_paise,
+            "rail_ref": rail_ref,
+        })
+
+    def rail_failed(self, cart_id: str, mandate_id: str, error: str):
+        """The gate said yes and the rail said no. Nothing is consumed."""
+        self.audit.append("rail.failed", {
+            "cart_id": cart_id, "mandate_id": mandate_id, "error": error,
         })
 
 
@@ -370,6 +382,7 @@ def evidence_pack(gate: Gate, audit: AuditLog, cart_id: str) -> dict:
         "items": cart["items"],
         "gate_decision": decision["payload"]["decision"],
         "settled": bool(settled),
+        "rail_reference": (settled["payload"].get("rail_ref") or None) if settled else None,
         "cryptographic_checks": checks,
         "audit_entries": entries,
         "chain_head": audit.entries[-1]["hash"],

@@ -213,6 +213,29 @@ def test_evidence_pack_is_json_serialisable():
     assert len(json.dumps(evidence_pack(gate, audit, "CART1"))) > 200
 
 
+def test_settlement_records_the_rail_reference():
+    _, audit, gate = setup()
+    intent, cart = make_intent(), make_cart(100000)
+    gate.authorize(intent, cart)
+    gate.settle(intent, cart, rail_ref="order_TEST123")
+    ev = evidence_pack(gate, audit, "CART1")
+    assert ev["rail_reference"] == "order_TEST123", ev
+
+
+def test_rail_failure_consumes_nothing():
+    """The gate said yes and the payment provider said no. Nothing is burned."""
+    _, audit, gate = setup()
+    intent, cart = make_intent(), make_cart(100000)
+    assert gate.authorize(intent, cart).allowed
+    gate.rail_failed("CART1", "INT1", "ConnectionError: provider unreachable")
+    st = gate.state["INT1"]
+    assert st.spent_paise == 0 and st.uses == 0, "authority must be untouched"
+    assert "CART1" not in st.settled_carts, "cart must stay payable"
+    assert gate.authorize(intent, cart).allowed, "retry must still work"
+    assert audit.verify()
+    assert any(e["event"] == "rail.failed" for e in audit.entries)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

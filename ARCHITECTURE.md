@@ -165,13 +165,33 @@ Marked in code with `ponytail:` comments.
 |---|---|---|
 | In-memory gate state | Single process, lost on restart | Redis |
 | `Keyring` as a dict | No real identity registry | NPCI UAP-style agent registry |
-| Settlement is the gate's own ledger | No money actually moves | Razorpay test-mode capture, marked in `pay()` |
+| Settlement stops at order creation | No capture, so no money moves | Checkout or Payment Links completes it |
 | Carts persisted as one JSON file | Demo-scale only | Any datastore |
+
+## 7a. Rail failure
+
+`authorize()` and `settle()` are separate calls, and the rail sits between them:
+
+```
+  authorize()  ->  ALLOWED
+       |
+       v
+  Razorpay order.create()  --- fails --->  rail_failed() logged
+       |                                   budget unchanged
+       | ok                                cart still payable
+       v                                   agent told RAIL_UNAVAILABLE
+  settle(rail_ref=order_id)
+```
+
+A payment-provider outage therefore cannot consume the user's authority. The
+cart remains replayable precisely because `settle()` never ran — the replay
+defence and the outage defence are the same mechanism seen from two sides.
 
 ## 8. What would need to change for production
 
-1. **Real rail.** One call inside `pay()`, after the gate allows. The decision
-   logic is unaffected — that separation is the point.
+1. **Capture, not just authorization.** `pay()` already creates a real Razorpay
+   test-mode Order after the gate allows. Completing the capture needs a
+   customer at a checkout page.
 2. **Key custody.** User keys belong in device secure enclaves; the demo holds
    them in a local file.
 3. **Registry.** `merchant_id` and `agent_id` need to resolve against something

@@ -126,6 +126,12 @@ Buy me some basmati rice         -> the listing is prompt-injected
 Buy me 2 litres of ghee          -> COUNTERSIGN_REQUIRED
 ```
 
+When the gate allows, `pay()` creates a real **Razorpay test-mode Order** for the
+approved amount and records the `order_id` in the audit chain and the evidence
+pack. If the rail is unreachable, the gate returns `RAIL_UNAVAILABLE`, **no
+budget is consumed**, and the cart stays payable — an outage at the payment
+provider cannot silently burn the user's authority.
+
 The tool surface is deliberately narrow. `pay()` takes a `cart_id` and **no
 amount** — the agent has no way to express a number. And `approve` is *not* an
 MCP tool: it lives in [`approve.py`](approve.py), a separate process holding the
@@ -152,7 +158,7 @@ user's key. An injected agent can ask for approval; it cannot grant it.
 | [`approve.py`](approve.py) | The user's device. Out of the agent's reach, on purpose. |
 | [`attacks.py`](attacks.py) | Adversarial suite and gate-on/off ablation |
 | [`injections.py`](injections.py) | Graded injection suite |
-| [`test_core.py`](test_core.py) | 21 assertions, one per deny path |
+| [`test_core.py`](test_core.py) | 23 assertions, one per deny path |
 
 Crypto is ECDSA P-256 / SHA-256, matching the AP2 mandate spec. Public-key rather
 than HMAC, and that is load-bearing: with a shared secret the merchant could have
@@ -163,8 +169,10 @@ Money is integer paise throughout. No floats on a money path.
 
 ## Honest limitations
 
-- **No real payment rail yet.** `pay()` settles against the gate's own ledger.
-  The Razorpay test-mode capture call is marked in the code but not wired.
+- **Payment stops at order creation.** When the gate allows, a real Razorpay
+  test-mode Order is created for exactly the approved amount and its id is
+  recorded in the audit chain. Completing a capture needs a customer at a
+  checkout page, which a headless agent cannot do — so no capture is claimed.
 - **Live-model injection compliance is unmeasured.** Harness ready, needs a key.
 - **Gate state is in-memory**, single process. Marked in code; Redis is the swap.
 - **The demo merchant is ours.** Real merchants do not expose agent checkout to

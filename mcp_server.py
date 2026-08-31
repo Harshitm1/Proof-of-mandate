@@ -18,8 +18,30 @@ from core import (IntentMandate, Cart, Envelope, Keyring, AuditLog, Gate,
 from cryptography.hazmat.primitives import serialization
 
 HERE = Path(__file__).parent
+ENV = HERE / ".env"
+if ENV.exists():                       # keys never live in the repo
+    for _line in ENV.read_text().splitlines():
+        _k, _, _v = _line.strip().partition("=")
+        if _k and not _k.startswith("#"):
+            os.environ.setdefault(_k, _v)
 KEYS = HERE / "demo_keys.json"
 CARTS_FILE = HERE / "demo_carts.json"   # shared with approve.py, which is a separate process
+
+
+def _rail():
+    """Razorpay test mode, or None if no keys are configured.
+
+    The gate's decision does not depend on this -- authorization and execution
+    are separate concerns, which is the whole point of the architecture.
+    """
+    kid, secret = os.environ.get("RAZORPAY_KEY_ID"), os.environ.get("RAZORPAY_KEY_SECRET")
+    if not (kid and secret):
+        return None
+    import razorpay
+    return razorpay.Client(auth=(kid, secret))
+
+
+RAIL = _rail()
 
 USER_ID, MERCHANT_ID, AGENT_ID = "user:priya", "merchant:freshcart", "agent:claude"
 
@@ -169,11 +191,28 @@ def pay(cart_id: str) -> str:
                            "reason": f"no quote called {cart_id}"})
     d = gate.authorize(INTENT, env)
     if d.allowed:
-        # ponytail: settlement is the gate's own ledger. Swap in the Razorpay
-        # test-mode capture call here -- the decision above is unchanged by it.
-        gate.settle(INTENT, env)
+        rail_ref = ""
+        if RAIL is not None:
+            try:
+                order = RAIL.order.create({
+                    "amount": d.amount_paise, "currency": "INR",
+                    "receipt": cart_id[:40],
+                    "notes": {"mandate_id": d.mandate_id, "gate_code": d.code},
+                })
+                rail_ref = order["id"]
+            except Exception as e:
+                # The gate said yes and the rail said no. Consume nothing: the
+                # budget is untouched and the cart stays payable.
+                gate.rail_failed(cart_id, d.mandate_id, f"{type(e).__name__}: {e}"[:200])
+                return json.dumps({
+                    "paid": False, "code": "RAIL_UNAVAILABLE",
+                    "reason": "Authorized, but the payment provider could not be "
+                              "reached. No budget was consumed -- retry is safe.",
+                    "attempted": _rs(d.amount_paise)}, indent=2)
+        gate.settle(INTENT, env, rail_ref=rail_ref)
         return json.dumps({"paid": True, "amount": _rs(d.amount_paise),
-                           "cart_id": cart_id, "reason": d.reason}, indent=2)
+                           "cart_id": cart_id, "razorpay_order_id": rail_ref or None,
+                           "reason": d.reason}, indent=2)
     out = {"paid": False, "code": d.code, "reason": d.reason,
            "attempted": _rs(d.amount_paise)}
     if d.needs_countersign:
