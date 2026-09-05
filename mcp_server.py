@@ -26,6 +26,7 @@ if ENV.exists():                       # keys never live in the repo
             os.environ.setdefault(_k, _v)
 KEYS = HERE / "demo_keys.json"
 CARTS_FILE = HERE / "demo_carts.json"   # shared with approve.py, which is a separate process
+MANDATE_FILE = HERE / "mandate.json"    # written by grant.py, also a separate process
 
 
 def _rail():
@@ -83,20 +84,39 @@ keyring.register(GATE_ID, GATE_KEY)
 audit = AuditLog(GATE_ID, GATE_KEY)
 gate = Gate(keyring, audit)
 
-# The standing authority. In production the user signs this on their device.
-INTENT = Envelope.wrap(IntentMandate(
-    mandate_id="INT-DEMO",
-    user_id=USER_ID,
-    agent_id=AGENT_ID,
-    merchant_id=MERCHANT_ID,
-    budget_paise=200000,             # Rs 2,000 total
-    per_txn_paise=150000,            # Rs 1,500 per purchase
-    countersign_above_paise=100000,  # above Rs 1,000 the human must approve
-    max_uses=5,
-    expires_at=int(time.time()) + 24 * 3600,
-    constraints="groceries only, under Rs 2000 total, FreshCart only",
-    nonce=uuid.uuid4().hex,
-)).sign(USER_ID, USER_KEY)
+def _demo_mandate() -> IntentMandate:
+    """What a first run gets, so the demo works on a fresh clone. Replace it by
+    running grant.py, which is how a real user would set their own limits."""
+    return IntentMandate(
+        mandate_id="INT-DEMO",
+        user_id=USER_ID,
+        agent_id=AGENT_ID,
+        merchant_id=MERCHANT_ID,
+        budget_paise=200000,             # Rs 2,000 total
+        per_txn_paise=150000,            # Rs 1,500 per purchase
+        countersign_above_paise=100000,  # above Rs 1,000 the human must approve
+        max_uses=5,
+        expires_at=int(time.time()) + 24 * 3600,
+        constraints="groceries only, under Rs 2000 total, FreshCart only",
+        nonce=uuid.uuid4().hex,
+    )
+
+
+def load_mandate() -> Envelope:
+    """The user's signed spending authority.
+
+    It lives on disk because grant.py writes it from a separate process holding
+    the user's key. There is deliberately no MCP tool that creates one: an agent
+    able to mint its own authority would have no limits at all.
+    """
+    if MANDATE_FILE.exists():
+        return Envelope.from_dict(json.loads(MANDATE_FILE.read_text()))
+    env = Envelope.wrap(_demo_mandate()).sign(USER_ID, USER_KEY)
+    MANDATE_FILE.write_text(json.dumps(env.to_dict(), indent=2))
+    return env
+
+
+INTENT = load_mandate()
 
 def save_cart(cart_id: str, env: Envelope):
     d = json.loads(CARTS_FILE.read_text()) if CARTS_FILE.exists() else {}
@@ -132,9 +152,9 @@ def browse() -> str:
 @mcp.tool()
 def budget() -> str:
     """How much spending authority is left under the current mandate."""
-    st = gate.state.get("INT-DEMO")
+    st = gate.state.get(load_mandate().body()["mandate_id"])
     spent = st.spent_paise if st else 0
-    m = INTENT.body()
+    m = load_mandate().body()
     return json.dumps({
         "constraints": m["constraints"],
         "budget": _rs(m["budget_paise"]),
@@ -159,7 +179,7 @@ def quote(sku: str, qty: int = 1) -> str:
     cart_id = f"CART-{uuid.uuid4().hex[:8].upper()}"
     cart = Cart(
         cart_id=cart_id,
-        intent_id="INT-DEMO",
+        intent_id=load_mandate().body()["mandate_id"],
         merchant_id=MERCHANT_ID,
         items=[{"sku": sku, "name": item["name"], "qty": qty, "unit_paise": item["paise"]}],
         total_paise=item["paise"] * qty,
@@ -188,7 +208,8 @@ def pay(cart_id: str) -> str:
     if env is None:
         return json.dumps({"paid": False, "code": "UNKNOWN_CART",
                            "reason": f"no quote called {cart_id}"})
-    d = gate.authorize(INTENT, env)
+    intent = load_mandate()
+    d = gate.authorize(intent, env)
     if d.allowed:
         rail_ref = ""
         if RAIL is not None:
@@ -210,7 +231,7 @@ def pay(cart_id: str) -> str:
                     "reason": "Authorized, but the payment provider could not be "
                               "reached. No budget was consumed -- retry is safe.",
                     "attempted": _rs(d.amount_paise)}, indent=2)
-        gate.settle(INTENT, env, rail_ref=rail_ref)
+        gate.settle(intent, env, rail_ref=rail_ref)
         return json.dumps({"paid": True, "amount": _rs(d.amount_paise),
                            "cart_id": cart_id, "razorpay_order_id": rail_ref or None,
                            "reason": d.reason}, indent=2)

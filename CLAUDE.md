@@ -15,20 +15,26 @@ Python 3.12 in `.venv` (the system Python is 3.9 and the MCP SDK needs 3.10+).
 .venv/bin/python test_core.py     # 27 tests
 .venv/bin/python attacks.py       # ablation, writes results.json
 .venv/bin/python demo.py          # the narrated story, for the video
+.venv/bin/python grant.py         # the user setting their own limits
 .venv/bin/python injections.py --dry
 ```
 
-`.env` holds Razorpay test keys and is gitignored. `demo_keys.json` and
-`demo_carts.json` are local demo state, also gitignored.
+`.env` holds Razorpay test keys and is gitignored. `demo_keys.json`,
+`demo_carts.json` and `mandate.json` are local state, also gitignored. A fresh
+clone writes a default demo mandate on first run so the demo works immediately;
+`grant.py` replaces it with the user's own limits.
 
 ## Invariants — do not break these
 
 1. **The agent never names an amount.** `pay()` takes a `cart_id` only. The
    amount comes from a merchant-signed cart. Adding an amount parameter anywhere
    in the agent's reach defeats the entire design.
-2. **`approve.py` is not an MCP tool, deliberately.** It is a separate process
-   holding the user's private key. If the agent could call it, human approval
-   would be worth nothing.
+2. **`approve.py` and `grant.py` are not MCP tools, deliberately.** Both are
+   separate processes holding the user's private key. If the agent could call
+   `approve.py`, human approval would be worth nothing; if it could call
+   `grant.py`, it would mint its own authority and have no limits at all.
+   There is no tool anywhere in the agent's reach that creates or approves
+   spending power.
 3. **Signatures are public-key (ECDSA P-256), never HMAC.** With a shared secret
    the merchant could forge the user's authorization, so the evidence would prove
    nothing in a dispute. This was changed from HMAC for exactly that reason.
