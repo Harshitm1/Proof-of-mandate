@@ -430,7 +430,7 @@ def evidence_pack(gate: Gate, audit: AuditLog, cart_id: str) -> dict:
             cart["merchant_id"], cart_env.payload, cart_env.sigs.get(cart["merchant_id"], "")),
         "user_countersigned_the_cart": gate.keyring.verify(
             intent["user_id"], cart_env.payload, cart_env.sigs.get(intent["user_id"], "")),
-        "audit_chain_intact": audit.verify(),
+        "audit_chain_intact": audit.verify(gate.keyring),
     }
     return {
         "cart_id": cart_id,
