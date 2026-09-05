@@ -13,6 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
+import approval
 from core import (IntentMandate, Cart, Envelope, Keyring, AuditLog, Gate,
                   new_keypair, public_pem, evidence_pack)
 from cryptography.hazmat.primitives import serialization
@@ -102,21 +103,38 @@ def _demo_mandate() -> IntentMandate:
     )
 
 
-def load_mandate() -> Envelope:
-    """The user's signed spending authority.
+def load_mandate():
+    """The user's signed spending authority, or None if they haven't granted any.
 
-    It lives on disk because grant.py writes it from a separate process holding
-    the user's key. There is deliberately no MCP tool that creates one: an agent
-    able to mint its own authority would have no limits at all.
+    None is the honest starting state for a new user, and every tool fails
+    closed on it. The mandate is only ever written by the approval page or
+    grant.py -- both outside the agent's reach. There is deliberately no tool
+    that creates one: an agent able to mint its own authority has no limits.
     """
     if MANDATE_FILE.exists():
         return Envelope.from_dict(json.loads(MANDATE_FILE.read_text()))
-    env = Envelope.wrap(_demo_mandate()).sign(USER_ID, USER_KEY)
-    MANDATE_FILE.write_text(json.dumps(env.to_dict(), indent=2))
+    return None
+
+
+def ensure_demo_mandate() -> Envelope:
+    """Seed the scripted demo so demo.py runs without a human. Not used by the
+    MCP tools -- a real user goes through request_authority()."""
+    env = load_mandate()
+    if env is None:
+        env = Envelope.wrap(_demo_mandate()).sign(USER_ID, USER_KEY)
+        MANDATE_FILE.write_text(json.dumps(env.to_dict(), indent=2))
     return env
 
 
-INTENT = load_mandate()
+NO_AUTHORITY = json.dumps({
+    "error": "NO_AUTHORITY",
+    "reason": "The user has not granted any spending authority yet.",
+    "next_step": "Ask them what they want to allow, then call request_authority().",
+}, indent=2)
+
+APPROVAL_LIVE = approval.start(
+    user_id=USER_ID, user_key=USER_KEY, mandate_file=MANDATE_FILE,
+    load_cart=lambda cid: load_cart(cid), save_cart=lambda cid, e: save_cart(cid, e))
 
 def save_cart(cart_id: str, env: Envelope):
     d = json.loads(CARTS_FILE.read_text()) if CARTS_FILE.exists() else {}
@@ -141,6 +159,43 @@ def _rs(paise: int) -> str:
 
 
 @mcp.tool()
+def request_authority(budget_rupees: float, per_purchase_rupees: float,
+                      approve_above_rupees: float, purchases: int = 5,
+                      days: int = 30, merchant: str = MERCHANT_ID,
+                      note: str = "groceries only") -> str:
+    """Ask the user for permission to spend. Returns a link for them to approve.
+
+    Call this when the user wants to buy something and no authority exists yet.
+    Ask them what limits they want first, then pass those numbers here.
+
+    This does NOT grant anything. It stages a request; the user sees the exact
+    figures on the approval page and signs them there with their own key. If you
+    ask for more than they agreed to, they will see it before approving.
+    """
+    if load_mandate() is not None:
+        return json.dumps({"error": "AUTHORITY_EXISTS",
+                           "reason": "A mandate is already active. Call budget() to see it."})
+    if not APPROVAL_LIVE:
+        return json.dumps({"error": "APPROVAL_UNAVAILABLE",
+                           "reason": f"Port {approval.PORT} is in use, so the approval "
+                                     f"page could not start. Fallback: python grant.py"})
+    rs = lambda r: int(round(float(r) * 100))
+    req = approval.request_authority(
+        mandate_id="INT-" + uuid.uuid4().hex[:8].upper(),
+        user_id=USER_ID, agent_id=AGENT_ID, merchant_id=merchant,
+        budget_paise=rs(budget_rupees), per_txn_paise=rs(per_purchase_rupees),
+        countersign_above_paise=rs(approve_above_rupees), max_uses=purchases,
+        expires_at=int(time.time()) + days * 86400,
+        constraints=note, nonce=uuid.uuid4().hex)
+    return json.dumps({
+        "status": "awaiting the user",
+        "approval_url": req["url"],
+        "next_step": "Show the user this link. Once they approve, call budget() "
+                     "to confirm, then continue shopping.",
+    }, indent=2)
+
+
+@mcp.tool()
 def browse() -> str:
     """List what this merchant sells. Returns SKU, name and price."""
     return json.dumps([
@@ -152,9 +207,12 @@ def browse() -> str:
 @mcp.tool()
 def budget() -> str:
     """How much spending authority is left under the current mandate."""
-    st = gate.state.get(load_mandate().body()["mandate_id"])
+    env = load_mandate()
+    if env is None:
+        return NO_AUTHORITY
+    m = env.body()
+    st = gate.state.get(m["mandate_id"])
     spent = st.spent_paise if st else 0
-    m = load_mandate().body()
     return json.dumps({
         "constraints": m["constraints"],
         "budget": _rs(m["budget_paise"]),
@@ -171,6 +229,8 @@ def quote(sku: str, qty: int = 1) -> str:
 
     The price is set and signed by the merchant. You cannot alter it.
     """
+    if load_mandate() is None:
+        return NO_AUTHORITY
     if sku not in CATALOG:
         return json.dumps({"error": f"unknown sku {sku}", "available": list(CATALOG)})
     if qty < 1:
@@ -204,11 +264,13 @@ def pay(cart_id: str) -> str:
     There is no amount parameter by design -- the amount comes from the
     merchant's signed cart.
     """
+    intent = load_mandate()
+    if intent is None:
+        return NO_AUTHORITY
     env = load_cart(cart_id)
     if env is None:
         return json.dumps({"paid": False, "code": "UNKNOWN_CART",
                            "reason": f"no quote called {cart_id}"})
-    intent = load_mandate()
     d = gate.authorize(intent, env)
     if d.allowed:
         rail_ref = ""
@@ -238,9 +300,12 @@ def pay(cart_id: str) -> str:
     out = {"paid": False, "code": d.code, "reason": d.reason,
            "attempted": _rs(d.amount_paise)}
     if d.needs_countersign:
+        # A link, not a signature. The user approves in their own context; the
+        # agent cannot click it and never holds the key.
+        out["approval_url"] = approval.request_cart_approval(cart_id)["url"]
         out["how_to_resolve"] = (
-            f"The user must approve this themselves. Ask them to run: "
-            f"python approve.py {cart_id}")
+            "This is above the user's auto-approve limit. Show them this link "
+            "and ask them to approve it, then call pay() again.")
     return json.dumps(out, indent=2)
 
 

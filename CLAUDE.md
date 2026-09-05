@@ -29,12 +29,16 @@ clone writes a default demo mandate on first run so the demo works immediately;
 1. **The agent never names an amount.** `pay()` takes a `cart_id` only. The
    amount comes from a merchant-signed cart. Adding an amount parameter anywhere
    in the agent's reach defeats the entire design.
-2. **`approve.py` and `grant.py` are not MCP tools, deliberately.** Both are
-   separate processes holding the user's private key. If the agent could call
-   `approve.py`, human approval would be worth nothing; if it could call
-   `grant.py`, it would mint its own authority and have no limits at all.
-   There is no tool anywhere in the agent's reach that creates or approves
-   spending power.
+2. **No tool in the agent's reach creates or approves spending power.**
+   `request_authority()` stages a request and returns a *link*; the signature
+   happens in `approval.py`, in the user's own context, after they have seen
+   the exact figures. `approve.py` and `grant.py` are the terminal fallbacks
+   for the same two acts. If the agent could grant its own mandate it would
+   have no limits at all; if it could approve its own purchases, approval
+   would be worth nothing. The agent may ask. It may never sign.
+   A new user starts with **no** mandate and `load_mandate()` returns `None` —
+   every tool fails closed on it. Only `demo.py` seeds one, via
+   `ensure_demo_mandate()`, so the scripted demo runs without a human.
 3. **Signatures are public-key (ECDSA P-256), never HMAC.** With a shared secret
    the merchant could forge the user's authorization, so the evidence would prove
    nothing in a dispute. This was changed from HMAC for exactly that reason.

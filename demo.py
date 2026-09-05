@@ -29,6 +29,7 @@ def box(lines, mark=""):
 
 def main(pause=0.0):
     head(1, "THE USER GRANTS AUTHORITY")
+    m.ensure_demo_mandate()   # a real user taps the approval page instead
     b = j(m.budget())
     box([f"\"{b['constraints']}\"", "",
          f"budget            {b['budget']}",
