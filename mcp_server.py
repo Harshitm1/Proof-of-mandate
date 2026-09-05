@@ -45,14 +45,16 @@ def _rail():
 
 RAIL = _rail()
 
-USER_ID, MERCHANT_ID, AGENT_ID = "user:priya", "merchant:freshcart", "agent:claude"
+# The storefront this server sells from. Config, not code: point it at a real
+# merchant by changing merchant.json and pointing CATALOG at their feed. The
+# gate never reads any of it -- it only checks that the merchant signed the
+# total -- so swapping storefronts changes nothing in core.py.
+MERCHANT = json.loads((HERE / "merchant.json").read_text())
+MERCHANT_ID, MERCHANT_NAME = MERCHANT["id"], MERCHANT["name"]
+
+USER_ID, AGENT_ID = "user:priya", "agent:claude"
 GATE_ID = "gate:pom"
 
-# Stands in for the merchant's own product API. The gate never sees any of this:
-# a cart is an opaque line-item list plus a signed total, so the number of
-# products a merchant sells is invisible to it. Swap this for a real catalogue
-# call and nothing in core.py changes.
-#
 # RICE5 carries a live prompt injection. That is deliberate -- it is the demo.
 CATALOG = json.loads((HERE / "catalog.json").read_text())
 
@@ -98,7 +100,7 @@ def _demo_mandate() -> IntentMandate:
         countersign_above_paise=100000,  # above Rs 1,000 the human must approve
         max_uses=5,
         expires_at=int(time.time()) + 24 * 3600,
-        constraints="groceries only, under Rs 2000 total, FreshCart only",
+        constraints=f"groceries only, under Rs 2000 total, {MERCHANT_NAME} only",
         nonce=uuid.uuid4().hex,
     )
 
@@ -134,6 +136,7 @@ NO_AUTHORITY = json.dumps({
 
 APPROVAL_LIVE = approval.start(
     user_id=USER_ID, user_key=USER_KEY, mandate_file=MANDATE_FILE,
+    merchant_name=MERCHANT_NAME,
     load_cart=lambda cid: load_cart(cid), save_cart=lambda cid, e: save_cart(cid, e))
 
 def save_cart(cart_id: str, env: Envelope):

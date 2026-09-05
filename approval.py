@@ -94,7 +94,8 @@ def _grant_body(f) -> str:
     rows = [("Total budget", _rs(f["budget_paise"])),
             ("Most per purchase", _rs(f["per_txn_paise"])),
             ("You approve above", _rs(f["countersign_above_paise"])),
-            ("Merchant", "Any" if f["merchant_id"] == "*" else f["merchant_id"].split(":")[-1]),
+            ("Merchant", "Any" if f["merchant_id"] == "*"
+                         else _ctx.get("merchant_name") or f["merchant_id"]),
             ("Purchases allowed", str(f["max_uses"])),
             ("Expires", time.strftime("%d %b %Y", time.localtime(f["expires_at"])))]
     return ("<h1>Allow your agent to spend?</h1>"
@@ -111,7 +112,7 @@ def _cart_body(cart: dict) -> str:
         f"<div class=row><span class=k>{i['name']} ×{i['qty']}</span>"
         f"<span class=v>{_rs(i['unit_paise'] * i['qty'])}</span></div>" for i in cart["items"])
     return ("<h1>Approve this purchase?</h1>"
-            f"<div class=sub>{cart['merchant_id'].split(':')[-1]}</div>" + rows
+            f"<div class=sub>{_ctx.get('merchant_name') or cart['merchant_id']}</div>" + rows
             + f"<div class=total><span>Total</span><span>{_rs(cart['total_paise'])}</span></div>"
             "<form method=post><button class=no name=a value=no>Decline</button>"
             "<button class=yes name=a value=yes>Approve</button></form>")
