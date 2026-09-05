@@ -175,9 +175,18 @@ def request_authority(budget_rupees: float, per_purchase_rupees: float,
     figures on the approval page and signs them there with their own key. If you
     ask for more than they agreed to, they will see it before approving.
     """
-    if load_mandate() is not None:
-        return json.dumps({"error": "AUTHORITY_EXISTS",
-                           "reason": "A mandate is already active. Call budget() to see it."})
+    # A mandate may already exist -- the user is allowed to change their mind.
+    # We stage a replacement rather than refusing: the page shows what is being
+    # replaced, so raising a limit is never something that happens quietly.
+    current = load_mandate()
+    replaces = None
+    if current is not None:
+        c = current.body()
+        st = gate.state.get(c["mandate_id"])
+        replaces = {"budget_paise": c["budget_paise"],
+                    "per_txn_paise": c["per_txn_paise"],
+                    "countersign_above_paise": c["countersign_above_paise"],
+                    "spent_paise": st.spent_paise if st else 0}
     if not APPROVAL_LIVE:
         return json.dumps({"error": "APPROVAL_UNAVAILABLE",
                            "reason": f"Port {approval.PORT} is in use, so the approval "
@@ -189,13 +198,33 @@ def request_authority(budget_rupees: float, per_purchase_rupees: float,
         budget_paise=rs(budget_rupees), per_txn_paise=rs(per_purchase_rupees),
         countersign_above_paise=rs(approve_above_rupees), max_uses=purchases,
         expires_at=int(time.time()) + days * 86400,
-        constraints=note, nonce=uuid.uuid4().hex)
+        constraints=note, nonce=uuid.uuid4().hex, _replaces=replaces)
     return json.dumps({
         "status": "awaiting the user",
+        "replaces_existing_mandate": replaces is not None,
         "approval_url": req["url"],
         "next_step": "Show the user this link. Once they approve, call budget() "
                      "to confirm, then continue shopping.",
     }, indent=2)
+
+
+@mcp.tool()
+def revoke_authority() -> str:
+    """Cancel the user's spending mandate. Nothing can be bought afterwards.
+
+    Safe to expose as a tool precisely because it only ever *reduces* what this
+    agent may do. The dangerous direction -- creating or widening authority --
+    always needs the user's signature on the approval page.
+    """
+    env = load_mandate()
+    if env is None:
+        return json.dumps({"revoked": False, "reason": "There was no active mandate."})
+    mid = env.body()["mandate_id"]
+    gate.revoke(mid)
+    MANDATE_FILE.unlink(missing_ok=True)
+    return json.dumps({"revoked": True, "mandate_id": mid,
+                       "reason": "Authority cancelled. Nothing can be spent until the "
+                                 "user grants a new mandate."}, indent=2)
 
 
 @mcp.tool()

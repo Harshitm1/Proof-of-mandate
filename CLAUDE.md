@@ -39,6 +39,9 @@ clone writes a default demo mandate on first run so the demo works immediately;
    A new user starts with **no** mandate and `load_mandate()` returns `None` —
    every tool fails closed on it. Only `demo.py` seeds one, via
    `ensure_demo_mandate()`, so the scripted demo runs without a human.
+   `revoke_authority()` **is** a tool, and safely so: it only ever reduces what
+   the agent may do. Direction is the test — widening authority needs a
+   signature, narrowing it does not.
 3. **Signatures are public-key (ECDSA P-256), never HMAC.** With a shared secret
    the merchant could forge the user's authorization, so the evidence would prove
    nothing in a dispute. This was changed from HMAC for exactly that reason.

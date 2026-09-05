@@ -91,6 +91,7 @@ DONE = ('<div class=done><div class=big>{icon}</div><h1>{title}</h1>'
 
 
 def _grant_body(f) -> str:
+    old = f.pop("_replaces", None)
     rows = [("Total budget", _rs(f["budget_paise"])),
             ("Most per purchase", _rs(f["per_txn_paise"])),
             ("You approve above", _rs(f["countersign_above_paise"])),
@@ -103,7 +104,13 @@ def _grant_body(f) -> str:
             + "".join(f"<div class=row><span class=k>{k}</span>"
                       f"<span class=v>{v}</span></div>" for k, v in rows)
             + f"<p class=note>“{f['constraints']}”</p>"
-            "<form method=post><button class=no name=a value=no>Decline</button>"
+            + ("" if not old else
+               "<p class=note style='border-color:#d29922'>"
+               f"This <b>replaces</b> your current permission "
+               f"({_rs(old['budget_paise'])} total, {_rs(old['per_txn_paise'])} per "
+               f"purchase). You have spent {_rs(old['spent_paise'])} under it; "
+               "approving starts that counter again at zero.</p>")
+            + "<form method=post><button class=no name=a value=no>Decline</button>"
             "<button class=yes name=a value=yes>Allow</button></form>")
 
 
@@ -173,7 +180,9 @@ class _Handler(BaseHTTPRequestHandler):
         # The signature happens here, in the user's own context -- never in a
         # tool the agent can call.
         if kind == "grant":
-            env = Envelope.wrap(IntentMandate(**req["fields"])).sign(
+            # _replaces is display-only context for the page, not a mandate field
+            fields = {k: v for k, v in req["fields"].items() if not k.startswith("_")}
+            env = Envelope.wrap(IntentMandate(**fields)).sign(
                 _ctx["user_id"], _ctx["user_key"])
             _ctx["mandate_file"].write_text(json.dumps(env.to_dict(), indent=2))
             sub = "Your agent can now spend within these limits."
