@@ -11,16 +11,35 @@ production this page is served by Razorpay (or the user's bank, since RBI's AFA
 rules require the approval to happen in a regulated channel) and the key lives
 in the device's secure element rather than a file.
 """
-import json, threading, time, uuid
+import json, pathlib, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from core import IntentMandate, Envelope
 
-PORT = 7777
-BASE = f"http://localhost:{PORT}"
+PORT = 7777          # actual port, set by start()
+BASE = f"http://127.0.0.1:{PORT}"
+PENDING_FILE = pathlib.Path(__file__).parent / "pending.json"
 
-_ctx = {}            # injected by mcp_server.start_approval_server()
-_pending = {}        # req_id -> {"kind", "mandate"|"cart_id", "state"}
+_ctx = {}            # injected by mcp_server
+
+
+# Pending requests live on disk, not in memory, for two reasons found the hard
+# way: a link must survive the server restarting, and an editor may run more
+# than one copy of the MCP server -- the instance holding the port has to be
+# able to serve a request another instance staged.
+def _load() -> dict:
+    try:
+        return json.loads(PENDING_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _save(d: dict):
+    PENDING_FILE.write_text(json.dumps(d, indent=2))
+
+
+def _put(key: str, rec: dict):
+    d = _load(); d[key] = rec; _save(d)
 
 
 def _rs(paise) -> str:
@@ -32,17 +51,17 @@ def _rs(paise) -> str:
 def request_authority(**fields) -> dict:
     """Stage a mandate for the user to sign. Signs nothing."""
     req_id = uuid.uuid4().hex[:10]
-    _pending[req_id] = {"kind": "grant", "fields": fields, "state": "pending"}
+    _put(req_id, {"kind": "grant", "fields": fields, "state": "pending"})
     return {"request_id": req_id, "url": f"{BASE}/grant/{req_id}"}
 
 
 def request_cart_approval(cart_id: str) -> dict:
-    _pending[cart_id] = {"kind": "cart", "cart_id": cart_id, "state": "pending"}
+    _put(cart_id, {"kind": "cart", "cart_id": cart_id, "state": "pending"})
     return {"url": f"{BASE}/approve/{cart_id}"}
 
 
 def status(req_id: str) -> str:
-    return _pending.get(req_id, {}).get("state", "unknown")
+    return _load().get(req_id, {}).get("state", "unknown")
 
 
 # ---------------------------------------------------------------- the page
@@ -119,7 +138,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         kind, key = self._split()
-        req = _pending.get(key)
+        req = _load().get(key)
         if not req:
             return self._send(self._page(DONE.format(
                 icon="\U0001f50e", title="Nothing to approve",
@@ -138,7 +157,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         kind, key = self._split()
-        req = _pending.get(key)
+        req = _load().get(key)
         if not req or req["state"] != "pending":
             return self._send(self._page(DONE.format(
                 icon="×", title="Expired", sub="")), 409)
@@ -146,6 +165,7 @@ class _Handler(BaseHTTPRequestHandler):
         approved = b"a=yes" in self.rfile.read(n)
         if not approved:
             req["state"] = "declined"
+            _put(key, req)
             return self._send(self._page(DONE.format(
                 icon="×", title="Declined", sub="Nothing was signed.")))
 
@@ -162,15 +182,24 @@ class _Handler(BaseHTTPRequestHandler):
             _ctx["save_cart"](req["cart_id"], env)
             sub = "Tell your agent to go ahead."
         req["state"] = "approved"
+        _put(key, req)
         self._send(self._page(DONE.format(icon="✓", title="Approved", sub=sub)))
 
 
 def start(**ctx) -> bool:
-    """Run the approval page in a background thread. False if the port is taken."""
+    """Run the approval page in a background thread.
+
+    Tries a small range of ports: an editor may already be running another copy
+    of this server, and silently failing would hand the user a dead link.
+    """
+    global PORT, BASE
     _ctx.update(ctx)
-    try:
-        srv = HTTPServer(("127.0.0.1", PORT), _Handler)
-    except OSError:
-        return False
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return True
+    for port in range(7777, 7787):
+        try:
+            srv = HTTPServer(("127.0.0.1", port), _Handler)
+        except OSError:
+            continue
+        PORT, BASE = port, f"http://127.0.0.1:{port}"
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        return True
+    return False

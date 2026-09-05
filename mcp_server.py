@@ -302,10 +302,15 @@ def pay(cart_id: str) -> str:
     if d.needs_countersign:
         # A link, not a signature. The user approves in their own context; the
         # agent cannot click it and never holds the key.
-        out["approval_url"] = approval.request_cart_approval(cart_id)["url"]
-        out["how_to_resolve"] = (
-            "This is above the user's auto-approve limit. Show them this link "
-            "and ask them to approve it, then call pay() again.")
+        if APPROVAL_LIVE:
+            out["approval_url"] = approval.request_cart_approval(cart_id)["url"]
+            out["how_to_resolve"] = (
+                "This is above the user's auto-approve limit. Show them this "
+                "link and ask them to approve it, then call pay() again.")
+        else:
+            out["how_to_resolve"] = (
+                f"Above the auto-approve limit, and the approval page could not "
+                f"start. Ask the user to run: python approve.py {cart_id}")
     return json.dumps(out, indent=2)
 
 
