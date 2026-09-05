@@ -19,7 +19,9 @@ from core import (IntentMandate, Cart, Envelope, Keyring, AuditLog, Gate,
                   new_keypair, canonical, _b64)
 
 USER, MERCHANT, ATTACKER = new_keypair(), new_keypair(), new_keypair()
+AGENT, ROGUE_AGENT, GATE_KEY = new_keypair(), new_keypair(), new_keypair()
 USER_ID, MERCHANT_ID, EVIL_ID = "user:priya", "merchant:freshcart", "merchant:evilmart"
+AGENT_ID, GATE_ID = "agent:claude", "gate:pom"
 
 BUDGET, PER_TXN, COUNTERSIGN = 500000, 150000, 100000   # Rs 5000 / 1500 / 1000
 
@@ -29,7 +31,9 @@ def world():
     kr.register(USER_ID, USER)
     kr.register(MERCHANT_ID, MERCHANT)
     kr.register(EVIL_ID, ATTACKER)
-    audit = AuditLog()
+    kr.register(AGENT_ID, AGENT)
+    kr.register(GATE_ID, GATE_KEY)
+    audit = AuditLog(GATE_ID, GATE_KEY)
     return kr, audit, Gate(kr, audit)
 
 
@@ -44,11 +48,11 @@ def intent(**over):
 
 
 def cart(total, *, cid="C1", merchant=MERCHANT_ID, key=MERCHANT, intent_id="INT1",
-         items=None, expires_in=600):
+         items=None, expires_in=600, agent_key=None):
     items = items or [{"sku": "X", "name": "Item", "qty": 1, "unit_paise": total}]
     c = Cart(cart_id=cid, intent_id=intent_id, merchant_id=merchant, items=items,
              total_paise=total, expires_at=int(time.time()) + expires_in, nonce="c")
-    return Envelope.wrap(c).sign(merchant, key)
+    return Envelope.wrap(c).sign(merchant, key).sign(AGENT_ID, agent_key or AGENT)
 
 
 def retotal(env, new_total):
@@ -103,6 +107,19 @@ ATTACKS = [
              "Attacker signs a cart while claiming to be the real merchant.",
              500000,
              lambda g: (intent(), cart(500000, key=ATTACKER))),
+
+    Scenario("stolen_mandate",
+             "A second agent replays a mandate scoped to another agent. Both "
+             "documents are genuine -- the presenter is not the one authorised.",
+             120000,
+             lambda g: (intent(), cart(120000, agent_key=ROGUE_AGENT))),
+
+    Scenario("float_paise",
+             "A cart priced in floating point. 1000 == 1000.0 passes a loose "
+             "arithmetic check and puts a float on a money path.",
+             150000,
+             lambda g: (intent(), cart(150000.0, items=[
+                 {"sku": "X", "name": "Item", "qty": 1, "unit_paise": 150000.0}]))),
 
     Scenario("counterfeit_storefront",
              "A fake shop with below-market prices, exactly the Visa threat model. "

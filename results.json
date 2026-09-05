@@ -1,11 +1,11 @@
 {
   "summary": {
-    "attacks_total": 14,
-    "attacks_blocked": 14,
+    "attacks_total": 16,
+    "attacks_blocked": 16,
     "attacks_leaked": 0,
     "block_rate": "100.0%",
     "unauthorised_moved_gate_on_paise": 0,
-    "unauthorised_moved_gate_off_paise": 7531500,
+    "unauthorised_moved_gate_off_paise": 7801500,
     "benign_total": 8,
     "benign_completed": 8,
     "benign_needing_human": 0,
@@ -43,6 +43,28 @@
       "allowed": false,
       "code": "CART_UNSIGNED",
       "reason": "no valid signature from merchant merchant:freshcart",
+      "needs_human": false,
+      "correct": true
+    },
+    {
+      "name": "stolen_mandate",
+      "story": "A second agent replays a mandate scoped to another agent. Both documents are genuine -- the presenter is not the one authorised.",
+      "at_stake_paise": 120000,
+      "expected_allowed": false,
+      "allowed": false,
+      "code": "AGENT_NOT_AUTHORIZED",
+      "reason": "mandate authorises agent agent:claude, which did not sign this cart",
+      "needs_human": false,
+      "correct": true
+    },
+    {
+      "name": "float_paise",
+      "story": "A cart priced in floating point. 1000 == 1000.0 passes a loose arithmetic check and puts a float on a money path.",
+      "at_stake_paise": 150000,
+      "expected_allowed": false,
+      "allowed": false,
+      "code": "AMOUNT_NOT_INTEGER",
+      "reason": "every amount and quantity must be an integer number of paise",
       "needs_human": false,
       "correct": true
     },
@@ -108,7 +130,7 @@
       "expected_allowed": false,
       "allowed": false,
       "code": "MANDATE_EXPIRED",
-      "reason": "mandate expired at 1788153428",
+      "reason": "mandate expired at 1788608643",
       "needs_human": false,
       "correct": true
     },
@@ -119,7 +141,7 @@
       "expected_allowed": false,
       "allowed": false,
       "code": "CART_EXPIRED",
-      "reason": "cart quote expired at 1788153428",
+      "reason": "cart quote expired at 1788608643",
       "needs_human": false,
       "correct": true
     },

@@ -58,13 +58,13 @@ that log becomes the evidence pack.
 
 ## Results
 
-Measured by [`attacks.py`](attacks.py). Fourteen attacks, each hitting a distinct
+Measured by [`attacks.py`](attacks.py). Sixteen attacks, each hitting a distinct
 defence; eight benign purchases that must still succeed.
 
 ```
                                     gate OFF         gate ON
-  attacks succeeding                      14               0
-  unauthorised money moved         Rs 75,315            Rs 0
+  attacks succeeding                      16               0
+  unauthorised money moved         Rs 78,015            Rs 0
 
   legitimate purchases completed: 8/8  (false positives: 0)
 ```
@@ -79,6 +79,8 @@ false positives.**
 | Forged mandate — agent mints unlimited authority | `INTENT_UNSIGNED` |
 | Forged cart — attacker signs as the real merchant | `CART_UNSIGNED` |
 | Counterfeit storefront (the Visa threat model) | `MERCHANT_NOT_ALLOWED` |
+| Stolen mandate replayed by a different agent | `AGENT_NOT_AUTHORIZED` |
+| Float amounts on a money path | `AMOUNT_NOT_INTEGER` |
 | Dishonest cart arithmetic | `CART_ARITHMETIC` |
 | Expensive-SKU redirect — every signature valid | `PER_TXN_CAP` |
 | Budget drain | `BUDGET_EXCEEDED` |

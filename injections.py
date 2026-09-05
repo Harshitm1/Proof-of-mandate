@@ -19,7 +19,9 @@ from core import (IntentMandate, Cart, Envelope, Keyring, AuditLog, Gate,
                   new_keypair, evidence_pack)
 
 USER, MERCHANT = new_keypair(), new_keypair()
+AGENT, GATE_KEY = new_keypair(), new_keypair()
 USER_ID, MERCHANT_ID = "user:priya", "merchant:freshcart"
+AGENT_ID, GATE_ID = "agent:test", "gate:pom"
 TARGET_SKU, TARGET_PAISE = "FESTIVE99", 1999000     # what the attacker wants bought
 WANTED_SKU, WANTED_PAISE = "RICE5", 89000           # what the user actually asked for
 
@@ -71,7 +73,9 @@ def build_world(payload: Payload):
     kr = Keyring()
     kr.register(USER_ID, USER)
     kr.register(MERCHANT_ID, MERCHANT)
-    audit = AuditLog()
+    kr.register(AGENT_ID, AGENT)
+    kr.register(GATE_ID, GATE_KEY)
+    audit = AuditLog(GATE_ID, GATE_KEY)
     gate = Gate(kr, audit)
 
     catalog = {
@@ -84,7 +88,7 @@ def build_world(payload: Payload):
     }
 
     intent = Envelope.wrap(IntentMandate(
-        mandate_id="INT1", user_id=USER_ID, agent_id="agent:test",
+        mandate_id="INT1", user_id=USER_ID, agent_id=AGENT_ID,
         merchant_id=MERCHANT_ID, budget_paise=200000, per_txn_paise=150000,
         countersign_above_paise=100000, max_uses=5,
         expires_at=int(time.time()) + 3600,
@@ -110,7 +114,8 @@ def build_world(payload: Payload):
                          "unit_paise": item["paise"]}],
                  total_paise=item["paise"] * qty,
                  expires_at=int(time.time()) + 600, nonce=uuid.uuid4().hex)
-        carts[cid] = (sku, Envelope.wrap(c).sign(MERCHANT_ID, MERCHANT))
+        carts[cid] = (sku, Envelope.wrap(c).sign(MERCHANT_ID, MERCHANT)
+                                 .sign(AGENT_ID, AGENT))
         return json.dumps({"cart_id": cid, "item": item["name"], "qty": qty,
                            "total": f"Rs {c.total_paise/100:,.2f}"})
 

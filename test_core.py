@@ -2,13 +2,14 @@
 
     .venv/bin/python test_core.py
 """
-import json, time
+import hashlib, json, time
 from dataclasses import asdict
 
 from core import (IntentMandate, Cart, Envelope, Keyring, AuditLog, Gate,
-                  new_keypair, canonical, evidence_pack, _b64)
+                  MandateError, new_keypair, canonical, evidence_pack, _b64)
 
 USER, MERCHANT, ATTACKER = new_keypair(), new_keypair(), new_keypair()
+AGENT, ROGUE, GATE_KEY = new_keypair(), new_keypair(), new_keypair()
 
 
 def setup(**intent_over):
@@ -16,7 +17,9 @@ def setup(**intent_over):
     kr.register("user:priya", USER)
     kr.register("merchant:freshcart", MERCHANT)
     kr.register("merchant:evilmart", ATTACKER)
-    audit = AuditLog()
+    kr.register("agent:claude", AGENT)
+    kr.register("gate:pom", GATE_KEY)
+    audit = AuditLog("gate:pom", GATE_KEY)
     return kr, audit, Gate(kr, audit)
 
 
@@ -31,14 +34,16 @@ def make_intent(**over):
 
 
 def make_cart(total=100000, merchant="merchant:freshcart", signer=MERCHANT,
-              signer_id=None, cart_id="CART1", intent_id="INT1", items=None, **over):
+              signer_id=None, cart_id="CART1", intent_id="INT1", items=None,
+              agent_key=None, **over):
     if items is None:
         items = [{"sku": "ATTA5", "name": "Atta 5kg", "qty": 1, "unit_paise": total}]
     base = dict(cart_id=cart_id, intent_id=intent_id, merchant_id=merchant,
                 items=items, total_paise=total,
                 expires_at=int(time.time()) + 600, nonce="c1")
     base.update(over)
-    return Envelope.wrap(Cart(**base)).sign(signer_id or merchant, signer)
+    env = Envelope.wrap(Cart(**base)).sign(signer_id or merchant, signer)
+    return env.sign("agent:claude", agent_key or AGENT)
 
 
 def test_happy_path():
@@ -234,6 +239,52 @@ def test_rail_failure_consumes_nothing():
     assert gate.authorize(intent, cart).allowed, "retry must still work"
     assert audit.verify()
     assert any(e["event"] == "rail.failed" for e in audit.entries)
+
+
+def test_mandate_is_bound_to_the_agent_it_names():
+    """A stolen mandate is useless to a different agent. The agent must sign the
+    cart it presents -- asserting an id would prove nothing, since a compromised
+    agent would assert whichever id the mandate happens to name."""
+    _, _, gate = setup()
+    d = gate.authorize(make_intent(), make_cart(100000, agent_key=ROGUE))
+    assert not d.allowed and d.code == "AGENT_NOT_AUTHORIZED", d
+
+
+def test_float_amounts_are_refused():
+    """1000 == 1000.0 in Python, so a loose sum check would pass a float on."""
+    _, _, gate = setup()
+    d = gate.authorize(make_intent(), make_cart(
+        100000.0, items=[{"sku": "A", "name": "Atta", "qty": 1, "unit_paise": 100000.0}]))
+    assert not d.allowed and d.code == "AMOUNT_NOT_INTEGER", d
+
+
+def test_settle_refuses_documents_it_never_authorised():
+    _, _, gate = setup()
+    try:
+        gate.settle(make_intent(), make_cart(999999, signer=ATTACKER))
+    except MandateError:
+        return
+    assert False, "settle moved the ledger on a cart the merchant never signed"
+
+
+def test_audit_survives_a_full_chain_rewrite():
+    """A hash chain alone only detects an edit: whoever holds the log can
+    recompute every hash after it. The per-entry signature is what makes the
+    record worth anything to an acquirer who does not trust the merchant."""
+    kr, audit, gate = setup()
+    gate.authorize(make_intent(), make_cart(100000))
+    assert audit.verify(kr), "a clean chain must verify with signatures"
+
+    audit.entries[0]["payload"]["decision"]["amount_paise"] = 1
+    prev = "genesis"
+    for e in audit.entries:                      # re-chain the whole log
+        e["prev_hash"] = prev
+        body = {k: v for k, v in e.items() if k not in ("hash", "sig")}
+        e["hash"] = hashlib.sha256(canonical(body)).hexdigest()
+        prev = e["hash"]
+
+    assert audit.verify() is True, "hashes alone cannot catch a rewrite"
+    assert audit.verify(kr) is False, "signatures must catch it"
 
 
 if __name__ == "__main__":

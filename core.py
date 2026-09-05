@@ -156,8 +156,24 @@ class Cart:
 # --------------------------------------------------------------------------
 
 class AuditLog:
-    def __init__(self):
+    """Append-only, hash-chained, and signed at every entry.
+
+    The chain alone only proves internal consistency: whoever holds the log can
+    edit one entry and recompute every hash after it, and verify() still passes.
+    Signing each entry head means a rewrite also needs the log key, so a third
+    party -- an acquirer reading the evidence pack -- can check the record
+    without trusting whoever stored it.
+
+    ponytail: the signer is the gate operator, so a compromised gate can still
+    rewrite its own history. External anchoring (a notary, or publishing the
+    head hash somewhere append-only) is the upgrade path for a counterparty who
+    will not take the operator's word.
+    """
+
+    def __init__(self, signer_id: str = "", private_key=None):
         self.entries = []
+        self.signer_id = signer_id
+        self._key = private_key
 
     def append(self, event: str, payload: dict) -> dict:
         entry = {
@@ -168,14 +184,22 @@ class AuditLog:
             "prev_hash": self.entries[-1]["hash"] if self.entries else "genesis",
         }
         entry["hash"] = hashlib.sha256(canonical(entry)).hexdigest()
+        if self._key is not None:
+            entry["sig"] = _b64(self._key.sign(entry["hash"].encode(),
+                                               ec.ECDSA(hashes.SHA256())))
         self.entries.append(entry)
         return entry
 
-    def verify(self) -> bool:
+    def verify(self, keyring=None) -> bool:
+        """Chain integrity. Pass a keyring to also check the signatures --
+        without it this detects an edit, but not a wholesale rewrite."""
         prev = "genesis"
         for e in self.entries:
-            body = {k: v for k, v in e.items() if k != "hash"}
+            body = {k: v for k, v in e.items() if k not in ("hash", "sig")}
             if body["prev_hash"] != prev or hashlib.sha256(canonical(body)).hexdigest() != e["hash"]:
+                return False
+            if keyring is not None and not keyring.verify(
+                    self.signer_id, e["hash"].encode(), e.get("sig", "")):
                 return False
             prev = e["hash"]
         return True
@@ -205,6 +229,7 @@ class MandateState:
     uses: int = 0
     revoked: bool = False
     settled_carts: set = field(default_factory=set)
+    authorized_carts: set = field(default_factory=set)
 
 
 class Gate:
@@ -222,6 +247,9 @@ class Gate:
 
     def authorize(self, intent_env: Envelope, cart_env: Envelope) -> Decision:
         d = self._evaluate(intent_env, cart_env)
+        if d.allowed:
+            # settle() will only record carts that came through here.
+            self.state.setdefault(d.mandate_id, MandateState()).authorized_carts.add(d.cart_id)
         self.audit.append("gate.decision", {
             "cart_id": d.cart_id,
             "mandate_id": d.mandate_id,
@@ -258,7 +286,27 @@ class Gate:
         d = lambda c, why: Decision(False, c, why, cart.total_paise, cart.cart_id,
                                     intent.mandate_id)
 
-        # 3. The cart's own arithmetic has to hold.
+        # 2b. The agent presenting this cart is the one the user authorised. It
+        #     must SIGN the cart, not merely carry the right id: a compromised
+        #     agent would assert whichever id the mandate names, so a
+        #     self-reported identifier proves nothing. Signing also puts the
+        #     executing agent into the evidence pack, which is what a dispute
+        #     needs to route liability away from the merchant.
+        if intent.agent_id != "*" and not self.keyring.verify(
+                intent.agent_id, cart_env.payload, cart_env.sigs.get(intent.agent_id, "")):
+            return d("AGENT_NOT_AUTHORIZED",
+                     f"mandate authorises agent {intent.agent_id}, "
+                     f"which did not sign this cart")
+
+        # 3. The cart's own arithmetic has to hold. Amounts must be integer
+        #    paise: 1000 == 1000.0 is true in Python, so a loose comparison
+        #    would let a float through the sum check and onto a money path.
+        amounts = ([cart.total_paise]
+                   + [i["qty"] for i in cart.items]
+                   + [i["unit_paise"] for i in cart.items])
+        if any(type(v) is not int for v in amounts):
+            return d("AMOUNT_NOT_INTEGER",
+                     "every amount and quantity must be an integer number of paise")
         computed = sum(i["qty"] * i["unit_paise"] for i in cart.items)
         if computed != cart.total_paise:
             return d("CART_ARITHMETIC", f"items sum to {computed}, cart claims {cart.total_paise}")
@@ -318,7 +366,24 @@ class Gate:
         """
         intent = IntentMandate(**intent_env.body())
         cart = Cart(**cart_env.body())
+
+        # Re-check the facts that cannot change between authorize() and here:
+        # the two signatures and the cart-to-mandate binding. Deliberately NOT
+        # the temporal or budget checks -- a slow rail must never make an
+        # already-captured payment unrecordable. Without this the ledger would
+        # move on any pair of documents handed to settle().
+        if not self.keyring.verify(intent.user_id, intent_env.payload,
+                                   intent_env.sigs.get(intent.user_id, "")):
+            raise MandateError("settle: mandate is not signed by the user")
+        if not self.keyring.verify(cart.merchant_id, cart_env.payload,
+                                   cart_env.sigs.get(cart.merchant_id, "")):
+            raise MandateError("settle: cart is not signed by the merchant")
+        if cart.intent_id != intent.mandate_id:
+            raise MandateError("settle: cart does not belong to this mandate")
+
         st = self.state.setdefault(intent.mandate_id, MandateState())
+        if cart.cart_id not in st.authorized_carts:
+            raise MandateError(f"settle: cart {cart.cart_id} was never authorised")
         st.spent_paise += cart.total_paise
         st.uses += 1
         st.settled_carts.add(cart.cart_id)

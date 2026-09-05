@@ -44,6 +44,7 @@ def _rail():
 RAIL = _rail()
 
 USER_ID, MERCHANT_ID, AGENT_ID = "user:priya", "merchant:freshcart", "agent:claude"
+GATE_ID = "gate:pom"
 
 # The demo merchant. One listing carries a prompt injection -- that is the point.
 CATALOG = {
@@ -64,25 +65,30 @@ CATALOG = {
 
 def _load_keys():
     """Generate on first run, reuse after -- approve.py needs the same identities."""
-    if KEYS.exists():
-        d = json.loads(KEYS.read_text())
-        load = lambda p: serialization.load_pem_private_key(p.encode(), password=None)
-        return load(d["user"]), load(d["merchant"])
-    user, merchant = new_keypair(), new_keypair()
+    load = lambda p: serialization.load_pem_private_key(p.encode(), password=None)
     dump = lambda k: k.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption()).decode()
-    KEYS.write_text(json.dumps({"user": dump(user), "merchant": dump(merchant)}))
-    return user, merchant
+    d = json.loads(KEYS.read_text()) if KEYS.exists() else {}
+    # agent and gate keys were added later; top up an existing file rather than
+    # regenerating, so carts already saved by approve.py stay verifiable.
+    if not all(k in d for k in ("user", "merchant", "agent", "gate")):
+        for name in ("user", "merchant", "agent", "gate"):
+            d.setdefault(name, dump(new_keypair()))
+        KEYS.write_text(json.dumps(d))
+    return (load(d["user"]), load(d["merchant"]),
+            load(d["agent"]), load(d["gate"]))
 
 
-USER_KEY, MERCHANT_KEY = _load_keys()
+USER_KEY, MERCHANT_KEY, AGENT_KEY, GATE_KEY = _load_keys()
 
 keyring = Keyring()
 keyring.register(USER_ID, USER_KEY)
 keyring.register(MERCHANT_ID, MERCHANT_KEY)
-audit = AuditLog()
+keyring.register(AGENT_ID, AGENT_KEY)
+keyring.register(GATE_ID, GATE_KEY)
+audit = AuditLog(GATE_ID, GATE_KEY)
 gate = Gate(keyring, audit)
 
 # The standing authority. In production the user signs this on their device.
@@ -168,7 +174,8 @@ def quote(sku: str, qty: int = 1) -> str:
         expires_at=int(time.time()) + 600,
         nonce=uuid.uuid4().hex,
     )
-    save_cart(cart_id, Envelope.wrap(cart).sign(MERCHANT_ID, MERCHANT_KEY))
+    save_cart(cart_id, Envelope.wrap(cart).sign(MERCHANT_ID, MERCHANT_KEY)
+                                          .sign(AGENT_ID, AGENT_KEY))
     return json.dumps({
         "cart_id": cart_id,
         "item": item["name"],

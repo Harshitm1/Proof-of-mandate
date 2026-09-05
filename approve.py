@@ -18,10 +18,14 @@ def main(cart_id: str) -> int:
         return 1
 
     cart = env.body()
-    line = cart["items"][0]
-    print(f"Approve this purchase?\n"
-          f"  {line['name']} x{line['qty']}\n"
-          f"  {_rs(cart['total_paise'])} from {cart['merchant_id']}")
+    # Every line, never just the first. The user signs the whole payload, so
+    # showing a summary that omits items is a consent-surface attack waiting to
+    # happen: a hidden line item would be paid for but never displayed.
+    print("Approve this purchase?")
+    for line in cart["items"]:
+        print(f"  {line['name']} x{line['qty']}"
+              f"  {_rs(line['unit_paise'] * line['qty'])}")
+    print(f"  ---\n  {_rs(cart['total_paise'])} from {cart['merchant_id']}")
     if input("  [y/N] ").strip().lower() != "y":
         print("Declined. Nothing signed.")
         return 1

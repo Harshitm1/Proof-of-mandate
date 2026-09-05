@@ -12,7 +12,7 @@ don't carry.
 Python 3.12 in `.venv` (the system Python is 3.9 and the MCP SDK needs 3.10+).
 
 ```bash
-.venv/bin/python test_core.py     # 23 tests
+.venv/bin/python test_core.py     # 27 tests
 .venv/bin/python attacks.py       # ablation, writes results.json
 .venv/bin/python demo.py          # the narrated story, for the video
 .venv/bin/python injections.py --dry
@@ -34,9 +34,26 @@ Python 3.12 in `.venv` (the system Python is 3.9 and the MCP SDK needs 3.10+).
    nothing in a dispute. This was changed from HMAC for exactly that reason.
 4. **`authorize()` and `settle()` stay separate.** Budget and replay state move
    only after the rail confirms. A provider outage must not consume authority.
+   `settle()` re-checks the time-invariant facts (both signatures, the
+   cart-to-mandate binding) and refuses a cart that never came through
+   `authorize()` — but deliberately does *not* re-check expiry or budget, so a
+   slow rail can never make a captured payment unrecordable.
 5. **Money is integer paise.** No floats on a money path.
 6. **Every deny carries a code and a human-readable reason.**
    `test_every_deny_is_explained` enforces it.
+7. **The agent signs the cart it presents.** A mandate names an `agent_id`; the
+   gate requires that agent's signature rather than trusting a self-reported
+   id, because a compromised agent would simply assert whichever id the mandate
+   names. This is what makes a stolen mandate useless to another agent, and it
+   puts the executing agent's identity into the evidence pack.
+8. **Audit entries are signed, not merely chained.** A hash chain alone only
+   detects an edit — whoever holds the log can re-chain the whole thing and
+   still pass `verify()`. `verify(keyring)` checks the per-entry signatures,
+   which is what makes the log worth anything to a party who does not trust the
+   operator. External anchoring is the remaining upgrade.
+9. **Amounts are integers, checked by type.** `1000 == 1000.0` is true in
+   Python, so the gate rejects non-`int` amounts outright rather than relying on
+   the arithmetic comparison.
 
 ## Design decisions worth knowing
 
